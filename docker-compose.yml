@@ -1,0 +1,10 @@
+services:
+  mig-console:
+    build: .
+    image: mig-console:latest
+    container_name: mig-console
+    ports:
+      - "8000:8000"
+    environment:
+      TZ: Asia/Shanghai
+    restart: unless-stopped

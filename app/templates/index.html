@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MIG 切片调整值班台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div>
+    <h1>MIG 切片调整值班台</h1>
+    <p class="sub">单卡模拟器 · 最多 8 个槽位 · 每次一批，两块新切片</p>
+  </div>
+  <div class="header-actions">
+    <span id="batch-pill" class="pill">尚未规划</span>
+    <button class="ghost" id="reset-btn">恢复示例布局</button>
+  </div>
+</header>
+
+<div id="toast" class="toast" hidden></div>
+
+<main>
+  <section class="card" id="layout-card">
+    <h2>实际布局</h2>
+    <div id="slot-strip" class="slot-strip"></div>
+    <p id="slot-note" class="hint" hidden></p>
+    <p id="fault-banner" class="fault-banner" hidden></p>
+    <div class="table-wrap">
+      <table id="slice-table">
+        <thead><tr>
+          <th>切片</th><th>规格</th><th>槽位</th><th>状态</th><th>接单</th><th>订单</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card" id="plan-card">
+    <h2>① 填写两块新切片并规划</h2>
+    <div class="slot-count-row">
+      <label>槽位总数
+        <select id="slot-count">
+          <option>8</option><option>7</option><option>6</option><option>5</option>
+          <option>4</option><option>3</option><option>2</option><option>1</option>
+        </select>
+      </label>
+      <span class="hint">当前卡范围：<b id="slot-range">0–7</b></span>
+    </div>
+    <div class="new-slices">
+      <fieldset>
+        <legend>新切片 1</legend>
+        <label>规格 <select class="spec-select" data-index="0"></select></label>
+        <label>备注名 <input class="spec-name" data-index="0" placeholder="可选"></label>
+      </fieldset>
+      <fieldset>
+        <legend>新切片 2</legend>
+        <label>规格 <select class="spec-select" data-index="1"></select></label>
+        <label>备注名 <input class="spec-name" data-index="1" placeholder="可选"></label>
+      </fieldset>
+    </div>
+    <div class="row">
+      <button id="plan-btn" class="primary">生成方案</button>
+      <span class="hint">运行中切片原地保留；两块新切片互不重叠；拆掉的空闲切片数最少。</span>
+    </div>
+    <div id="plan-result" class="plan-result"></div>
+  </section>
+
+  <section class="card" id="batch-card">
+    <h2>② 批次执行与核对</h2>
+    <div id="batch-summary" class="batch-summary muted">还没有调整批次。</div>
+    <div class="row actions" id="batch-actions"></div>
+    <div id="batch-events" class="events"></div>
+  </section>
+
+  <section class="card" id="import-card">
+    <h2>初始布局导入</h2>
+    <p class="hint">导入最多 8 个槽位的布局、各规格允许占用的区间，以及卡上现有切片。
+      运行中切片（kind=running）会被原地保留；空闲切片（kind=idle）可被调度或拆除。</p>
+    <details>
+      <summary>展开 / 收起 JSON 导入</summary>
+      <textarea id="import-json" spellcheck="false"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button id="import-btn" class="primary">导入布局</button>
+        <button id="import-example-btn" class="ghost">填入示例</button>
+        <span id="import-error" class="hint"></span>
+      </div>
+    </details>
+  </section>
+
+  <section class="card" id="sim-card">
+    <h2>模拟器控制（外部系统 / 故障注入）</h2>
+    <div class="sim-grid">      <div class="sim-block">
+        <h3>外部接单</h3>
+        <p class="hint">模拟控制面把订单派给空闲切片。暂停中的待拆切片会被拒绝。</p>
+        <label>指定切片（留空自动选择）
+          <select id="order-slice"><option value="">自动选择</option></select>
+        </label>
+        <label class="check"><input type="checkbox" id="order-force"> 忽略暂停标记强制派单</label>
+        <button id="order-btn">派单</button>
+      </div>
+      <div class="sim-block">
+        <h3>外部新增空闲切片</h3>
+        <p class="hint">模拟规划/确认之间布局被外部改动。</p>
+        <label>规格 <select id="ext-spec"></select></label>
+        <label>槽位起 <input id="ext-start" type="number" min="0" max="7" value="7"></label>
+        <label>槽位止 <input id="ext-end" type="number" min="0" max="7" value="7"></label>
+        <button id="ext-add-btn">新增</button>
+      </div>
+      <div class="sim-block">
+        <h3>外部移除空闲切片</h3>
+        <label>切片 <select id="ext-remove-slice"></select></label>
+        <button id="ext-remove-btn">移除</button>
+      </div>
+      <div class="sim-block">
+        <h3>驱动故障注入</h3>
+        <p class="hint">after_apply：改动生效后报错；before_apply：改动前报错。</p>
+        <label>模式
+          <select id="fault-mode">
+            <option value="after_apply">after_apply（生效后报错）</option>
+            <option value="before_apply">before_apply（生效前报错）</option>
+          </select>
+        </label>
+        <label>跳过 N 项 <input id="fault-skip" type="number" min="0" max="10" value="1"></label>
+        <label>连续失败次数 <input id="fault-count" type="number" min="1" max="10" value="1"></label>
+        <button id="fault-btn">设置故障</button>
+        <button id="fault-clear-btn" class="ghost">清除故障</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" id="selftest-card">
+    <h2>网页自测</h2>
+    <p class="hint">在独立模拟器上验证调整期间接单、确认冲突、驱动报错后续做与最少拆除，不会影响左侧实时布局。</p>
+    <button id="selftest-btn" class="primary">运行自测</button>
+    <div id="selftest-result"></div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
