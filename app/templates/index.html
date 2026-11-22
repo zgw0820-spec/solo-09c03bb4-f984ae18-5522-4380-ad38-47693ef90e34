@@ -36,8 +36,37 @@
     </div>
   </section>
 
+  <section class="card" id="jobs-card">
+    <h2>① 图像描述作业（两段推理）</h2>
+    <p class="hint">提交作业时分别选择图像编码与描述生成所需的 MIG 规格。每段开工时才领取可接单切片，
+      完工即归还；卡外最多暂存一份待生成的编码结果。生成切片全忙时，已开工的编码仍可交出结果。</p>
+    <div class="job-form">
+      <label>图片 / 提示词
+        <input id="job-prompt" placeholder="例如：一只在雪地奔跑的狗" value="一张待描述的图片">
+      </label>
+      <label>图像编码规格 <select id="job-encode-spec"></select></label>
+      <label>描述生成规格 <select id="job-generate-spec"></select></label>
+      <button id="job-submit-btn" class="primary">提交作业</button>
+    </div>
+    <div class="job-status-row">
+      <span id="job-buffer" class="pill">卡外暂存：空</span>
+      <span id="job-counts" class="hint"></span>
+      <button id="job-tick-btn" class="ghost small">继续派单</button>
+    </div>
+    <div class="table-wrap">
+      <table id="job-table">
+        <thead><tr>
+          <th>作业</th><th>提示词</th><th>编码（切片 / 状态）</th>
+          <th>生成（切片 / 状态）</th><th>作业状态</th><th>等待原因 / 结果</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="job-events" class="events"></div>
+  </section>
+
   <section class="card" id="plan-card">
-    <h2>① 填写两块新切片并规划</h2>
+    <h2>② 填写两块新切片并规划</h2>
     <div class="slot-count-row">
       <label>槽位总数
         <select id="slot-count">
@@ -67,7 +96,7 @@
   </section>
 
   <section class="card" id="batch-card">
-    <h2>② 批次执行与核对</h2>
+    <h2>③ 批次执行与核对</h2>
     <div id="batch-summary" class="batch-summary muted">还没有调整批次。</div>
     <div class="row actions" id="batch-actions"></div>
     <div id="batch-events" class="events"></div>

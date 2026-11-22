@@ -59,6 +59,7 @@ main {
   #selftest-card { grid-column: 1 / -1; }
   #import-card { grid-column: 1 / -1; }
   #sim-card { grid-column: 1 / -1; }
+  #jobs-card { grid-column: 1 / -1; }
 }
 
 .card {
@@ -225,6 +226,26 @@ legend { padding: 0 6px; font-size: 11px; color: var(--muted); }
 .tag-new { color: #cba8ff; }
 .tag-remove { color: #ffb4b0; }
 .tag-keep { color: var(--muted); }
+
+/* ---------------------------------------------------------------- jobs */
+.job-form {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+.job-form label { margin: 0; }
+.job-status-row { display: flex; align-items: center; gap: 12px; margin: 6px 0 12px; flex-wrap: wrap; }
+#job-table td { vertical-align: top; }
+.job-detail { max-width: 360px; }
+.job-detail .hint { margin-top: 3px; }
+.job-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.pill.state-applying { border-color: #2e7bb0; color: #8fd0ff; background: #122a3a; }
+
+@media (max-width: 760px) {
+  .job-form { grid-template-columns: 1fr; }
+}
 
 /* --------------------------------------------------------------- batch */
 .batch-summary { font-size: 13px; }

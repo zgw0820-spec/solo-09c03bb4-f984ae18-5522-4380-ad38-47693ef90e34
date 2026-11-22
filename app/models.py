@@ -140,6 +140,36 @@ class OrderRequest(BaseModel):
     force: bool = False
 
 
+class ReleaseRequest(BaseModel):
+    slice_id: str
+    order_id: str | None = None
+
+
+class JobRequest(BaseModel):
+    """Submit one image-caption inference job.
+
+    The two stages may ask for different MIG specs; both are matched exactly
+    against the card's slice specs.
+    """
+
+    prompt: str = Field(default="一张待描述的图片", min_length=1, max_length=200)
+    encode_spec: str = Field(min_length=1, max_length=40)
+    generate_spec: str = Field(min_length=1, max_length=40)
+
+    @field_validator("prompt", "encode_spec", "generate_spec")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("不能为空")
+        return value
+
+
+class CompleteStageRequest(BaseModel):
+    stage: Literal["encode", "generate"]
+    caption: str | None = Field(default=None, max_length=500)
+
+
 class FaultRequest(BaseModel):
     mode: Literal["after_apply", "before_apply"] = "after_apply"
     skip: int = Field(default=0, ge=0, le=10)

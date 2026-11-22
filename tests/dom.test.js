@@ -32,6 +32,7 @@ async function main() {
   window.setTimeout = setTimeout;
   window.clearTimeout = clearTimeout;
   window.console = console;
+  window.prompt = () => "雪地里的狗（模拟描述）";
 
   const appJs = fs.readFileSync(path.join(APP, "static/app.js"), "utf8");
   // app.js uses browser-only fetch/URL; give it the globals it expects.
@@ -97,13 +98,42 @@ async function main() {
     assert(q("#toast").textContent.includes("订单已派发"), "非待拆空闲切片可接单");
   }
 
-  console.log("场景 5：自测面板渲染");
+  console.log("场景 5：图像描述作业面板");
+  await window.__testHooks.act("/api/layout/reset", {});
+  await new Promise((r) => setTimeout(r, 300));
+  const beforeRows = qa("#job-table tbody tr").length;
+  q("#job-prompt").value = "雪地里的狗";
+  q("#job-encode-spec").value = "1g.10gb";
+  q("#job-generate-spec").value = "1g.10gb";
+  q("#job-submit-btn").click();
+  await new Promise((r) => setTimeout(r, 400));
+  assert(qa("#job-table tbody tr").length === beforeRows + 1, "作业出现在列表中");
+  const encodeBtn = qa("#job-table tbody button").find((b) => b.textContent.includes("编码完工"));
+  assert(encodeBtn, "编码中作业有完工按钮");
+  encodeBtn.click();
+  await new Promise((r) => setTimeout(r, 400));
+  const generateBtn = qa("#job-table tbody button").find((b) => b.textContent.includes("生成完工"));
+  assert(generateBtn, "编码完工后出现生成完工按钮");
+  generateBtn.click();
+  await new Promise((r) => setTimeout(r, 400));
+  const lastRow = qa("#job-table tbody tr").pop();
+  assert(lastRow.textContent.includes("已完成"), "生成完工后作业完成");
+
+  console.log("场景 6：重复完工回报只结算一次");
+  const dupBtn = qa("#job-table tbody button").find((b) => b.textContent.includes("重复报编码完工"));
+  assert(dupBtn, "完成作业提供重复回报入口");
+  dupBtn.click();
+  await new Promise((r) => setTimeout(r, 400));
+  const dupRow = qa("#job-table tbody tr").pop();
+  assert(dupRow.textContent.includes("重复回报已忽略"), "重复回报被忽略并计数");
+
+  console.log("场景 7：自测面板渲染");
   q("#selftest-btn").click();
   await new Promise((r) => setTimeout(r, 2500));
   assert(q(".selftest-summary.pass"), "自测全部通过");
-  assert(qa(".scenario").length === 8, "渲染 8 个自测场景");
+  assert(qa(".scenario").length === 12, "渲染 12 个自测场景");
 
-  console.log("场景 6：导入校验错误展示");
+  console.log("场景 8：导入校验错误展示");
   // Abandon the held batch first, otherwise layout import is (rightly) blocked.
   const abandonBtn = qa("#batch-actions button").find((b) => b.textContent.includes("放弃"));
   if (abandonBtn) {

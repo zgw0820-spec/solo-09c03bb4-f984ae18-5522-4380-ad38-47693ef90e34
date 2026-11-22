@@ -26,7 +26,8 @@ async function main() {
     executablePath: EXECUTABLE,
     args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 1600 } });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 1800 } });
+  page.on("dialog", async (dialog) => { await dialog.accept("雪地里的狗（模拟描述）"); });
   const errors = [];
   page.on("pageerror", (e) => errors.push("pageerror: " + String(e)));
   page.on("console", (m) => {
@@ -172,7 +173,70 @@ async function main() {
   const failedScenarios = await page.locator(".scenario.fail").count();
   assert(failedScenarios === 0, "没有失败场景");
 
-  console.log("场景 8：最多 8 槽位校验");
+  console.log("场景 8：图像描述作业与生成拥塞");
+  await reset(page);
+  // Occupy the only 1g slice with unrelated external work.  Jobs encode on the
+  // 3g slice and generate on 1g, so generate is congested.
+  await page.selectOption("#order-slice", "idle-2");
+  await page.click("#order-btn");
+  await page.waitForTimeout(250);
+  for (const prompt of ["雪地里的狗", "海边的猫"]) {
+    await page.fill("#job-prompt", prompt);
+    await page.selectOption("#job-encode-spec", "3g.40gb");
+    await page.selectOption("#job-generate-spec", "1g.10gb");
+    await page.click("#job-submit-btn");
+    await page.waitForTimeout(300);
+  }
+  const jobRows = await page.locator("#job-table tbody tr").count();
+  assert(jobRows === 2, "两单作业均已提交");
+  const firstJobText = await page.locator("#job-table tbody tr").first().innerText();
+  assert(firstJobText.includes("编码中"), "第一单编码开工（开工才领切片）");
+  assert(firstJobText.includes("idle-1"), "编码领取 3g 切片 idle-1");
+  const secondJobText = await page.locator("#job-table tbody tr").nth(1).innerText();
+  assert(secondJobText.includes("排队"), "第二单排队等待暂存位");
+  // Complete the encode of the first job; 1g generate is busy, so the result
+  // must be buffered off-card and the encode slice returned.
+  await page.getByRole("button", { name: "编码完工" }).first().click();
+  await page.waitForTimeout(400);
+  const bufferText = await page.locator("#job-buffer").innerText();
+  assert(bufferText.includes("job-001"), "生成全忙时编码结果暂存卡外：" + bufferText);
+  const rowAfterEncode = await page.locator("#job-table tbody tr").first().innerText();
+  assert(rowAfterEncode.includes("已编码待生成"), "已完成编码等待生成");
+  assert(rowAfterEncode.includes("已归还"), "编码切片已归还");
+
+  console.log("场景 9：生成切片腾出 → 恢复派单");
+  // Release idle-2: generate takes the buffered result and the next job starts
+  // encoding in parallel on the freed encode slice.
+  await page.evaluate(async () => {
+    await fetch("/api/order/release", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slice_id: "idle-2" }),
+    });
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  const afterRelease = await page.evaluate(async () => {
+    const res = await fetch("/api/state");
+    return res.json();
+  });
+  const states = afterRelease.jobs.jobs.map((j) => j.state);
+  assert(states[0] === "generating", "腾出后生成开工并取走暂存结果");
+  assert(states[1] === "encoding", "下一单在空闲编码切片上并行开工");
+  assert(afterRelease.jobs.buffer.job === null, "暂存位已清空");
+
+  console.log("场景 10：重复完工回报只结算一次");
+  const jobId = afterRelease.jobs.jobs[0].id;
+  const dup1 = await page.evaluate(async (id) => {
+    const res = await fetch(`/api/jobs/${id}/complete`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stage: "encode" }),
+    });
+    return res.json();
+  }, jobId);
+  const dupJob = dup1.jobs.jobs.find((j) => j.id === jobId);
+  assert(dupJob.duplicate_reports === 1, "重复回报被忽略并计数");
+  assert(dupJob.state === "generating", "重复回报不改变状态");
+
+  console.log("场景 11：最多 8 槽位校验");
   await page.locator("#import-card details").evaluate((el) => { el.open = true; });
   await page.click("#import-example-btn");
   const json = await page.inputValue("#import-json");

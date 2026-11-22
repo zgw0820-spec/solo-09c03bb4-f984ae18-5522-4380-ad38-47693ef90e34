@@ -22,7 +22,7 @@ delivery.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Callable, Literal
 
 from .driver import DriverError, DriverOp, SimDriver
 from .planner import PlanResult, compute_plan
@@ -153,11 +153,18 @@ class Batch:
 
 
 class BatchService:
-    def __init__(self, sim: Simulator):
+    def __init__(
+        self,
+        sim: Simulator,
+        on_delivery: Callable[[], None] | None = None,
+    ):
         self.sim = sim
         self.driver = SimDriver(sim)
         self.batch: Batch | None = None
         self._batch_seq = 0
+        # Called after new slices become accepting, so queued work can be
+        # dispatched without waiting for the next page refresh.
+        self.on_delivery = on_delivery
 
     # ------------------------------------------------------------------ plan
     def plan(self, requests: list[tuple[str, str]]) -> Batch:
@@ -468,6 +475,8 @@ class BatchService:
         batch.state = "delivered"
         batch.error = None
         batch.log("delivered", "两块新切片已配齐并交付，可接单")
+        if self.on_delivery is not None:
+            self.on_delivery()
         return batch
 
     # ------------------------------------------------------------- abandon

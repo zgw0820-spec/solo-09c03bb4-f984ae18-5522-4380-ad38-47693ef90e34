@@ -41,6 +41,102 @@ async function api(path, options = {}) {
   return payload;
 }
 
+function renderJobPanel() {
+  const jobsData = state.data.jobs || { jobs: [], buffer: { max: 1, job_id: null }, counts: {}, events: [] };
+  const bufferEl = $("#job-buffer");
+  if (jobsData.buffer && jobsData.buffer.job) {
+    bufferEl.className = "pill state-applying";
+    bufferEl.textContent = `卡外暂存：${jobsData.buffer.job}（1/1）`;
+  } else {
+    bufferEl.className = "pill";
+    bufferEl.textContent = "卡外暂存：空（0/1）";
+  }
+  const c = jobsData.counts || {};
+  $("#job-counts").textContent =
+    `排队 ${c.queued || 0} · 编码中 ${c.encoding || 0} · 待生成 ${c.encoded || 0} · ` +
+    `生成中 ${c.generating || 0} · 已完成 ${c.done || 0}`;
+
+  const tbody = $("#job-table tbody");
+  tbody.innerHTML = "";
+  for (const job of jobsData.jobs) {
+    const tr = document.createElement("tr");
+    const stageCell = (stage) => {
+      if (!stage.started_at) {
+        return `<span class="badge no">未开工 · ${esc(stage.spec)}</span>`;
+      }
+      const state = stage.finished_at ? "已完工" : "进行中";
+      const cls = stage.finished_at ? "idle" : "busy";
+      return `<span class="badge ${cls}">${state}</span> ${esc(stage.slice_id || "")}
+        <div class="hint">${esc(stage.spec)}${stage.released_at ? " · 已归还" : ""}</div>`;
+    };
+    const stateCls = job.state === "done" ? "idle" :
+      job.state === "queued" ? "created" :
+      job.state === "encoded" ? "warn" : "busy";
+    const detail = job.state === "done"
+      ? `描述：${esc(job.caption || "")}`
+      : esc(job.wait_reason || "");
+    tr.innerHTML = `
+      <td><b>${esc(job.id)}</b></td>
+      <td>${esc(job.prompt)}</td>
+      <td>${stageCell(job.encode)}</td>
+      <td>${stageCell(job.generate)}</td>
+      <td><span class="badge ${stateCls}">${esc(job.state_label)}</span>
+        ${job.duplicate_reports ? `<div class="hint">重复回报已忽略 ${job.duplicate_reports} 次</div>` : ""}</td>
+      <td class="job-detail">
+        <span>${detail}</span>
+        <div class="job-actions">${jobActions(job)}</div>
+      </td>`;
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll("[data-complete]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const stage = btn.dataset.stage;
+      const jobId = btn.dataset.job;
+      const body = { stage };
+      if (stage === "generate") {
+        const job = jobsData.jobs.find((j) => j.id === jobId);
+        body.caption = window.prompt("生成完工：填写描述（可留空使用模拟描述）", job ? `图像描述（模拟）：${job.prompt}` : "");
+        if (body.caption === null) return;
+      }
+      try {
+        state.data = await api(`/api/jobs/${jobId}/complete`, { method: "POST", body });
+        renderAll();
+        toast(`${jobId} ${stage === "encode" ? "编码" : "生成"}完工已结算。`, "ok");
+      } catch (err) { toast(err.message); }
+    });
+  });
+
+  $("#job-events").innerHTML = (jobsData.events || []).slice().reverse().map((e) =>
+    `<div class="event k-${esc(e.kind)}">
+      <span class="t">${esc(e.at.slice(11, 19))}</span>
+      <span><span class="k">${esc(e.kind)}</span>${e.job_id ? esc(e.job_id) + " · " : ""}${esc(e.message)}</span>
+    </div>`).join("");
+}
+
+function jobActions(job) {
+  if (job.state === "encoding") {
+    return `<button class="small primary" data-complete="1" data-stage="encode" data-job="${esc(job.id)}">编码完工</button>`;
+  }
+  if (job.state === "generating") {
+    return `<button class="small primary" data-complete="1" data-stage="generate" data-job="${esc(job.id)}">生成完工</button>`;
+  }
+  if (job.state === "done") {
+    return `<button class="small ghost" data-complete="1" data-stage="encode" data-job="${esc(job.id)}">重复报编码完工</button>
+      <button class="small ghost" data-complete="1" data-stage="generate" data-job="${esc(job.id)}">重复报生成完工</button>`;
+  }
+  return "";
+}
+
+function fillJobSpecSelects() {
+  const names = state.data.layout.specs.map((s) => s.name);
+  for (const sel of ["#job-encode-spec", "#job-generate-spec"]) {
+    const el = $(sel);
+    const prev = el.value;
+    el.innerHTML = names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+    if (names.includes(prev)) el.value = prev;
+  }
+}
+
 /* ------------------------------------------------------------ rendering */
 function stateClass(slice) {
   if (slice.status === "running") return "running";
@@ -357,6 +453,8 @@ function renderAll() {
   renderPlanResult();
   renderBatch();
   fillSpecSelects();
+  fillJobSpecSelects();
+  renderJobPanel();
 }
 
 async function act(path, body) {
@@ -397,6 +495,31 @@ $("#plan-btn").addEventListener("click", () => {
       { spec: specs[1], name: names[1] || null },
     ],
   });
+});
+
+$("#job-submit-btn").addEventListener("click", async () => {
+  const prompt = $("#job-prompt").value.trim() || "一张待描述的图片";
+  try {
+    state.data = await api("/api/jobs", {
+      method: "POST",
+      body: {
+        prompt,
+        encode_spec: $("#job-encode-spec").value,
+        generate_spec: $("#job-generate-spec").value,
+      },
+    });
+    renderAll();
+    const last = state.data.jobs.jobs[state.data.jobs.jobs.length - 1];
+    toast(`作业已提交：${last ? last.id + " · " + last.state_label : ""}`, "ok");
+  } catch (err) { toast(err.message); }
+});
+
+$("#job-tick-btn").addEventListener("click", async () => {
+  try {
+    state.data = await api("/api/jobs/tick", { method: "POST" });
+    renderAll();
+    toast("已尝试继续派单。", "info");
+  } catch (err) { toast(err.message); }
 });
 
 $("#reset-btn").addEventListener("click", async () => {

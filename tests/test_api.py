@@ -10,7 +10,10 @@ import app.main as main_module
 @pytest.fixture()
 def client():
     main_module.sim = main_module.Simulator(DEFAULT_LAYOUT)
-    main_module.service = main_module.BatchService(main_module.sim)
+    main_module.jobs = main_module.JobService(main_module.sim)
+    main_module.service = main_module.BatchService(
+        main_module.sim, on_delivery=main_module.jobs.tick
+    )
     with TestClient(main_module.app) as c:
         yield c
 
@@ -91,3 +94,82 @@ def test_layout_import_validation_errors_are_422(client):
     )
     assert res.status_code == 422
     assert "重叠" in res.text
+
+
+# -------------------------------------------------------------------- jobs
+def test_jobs_state_shape(client):
+    data = client.get("/api/state").json()
+    assert data["jobs"]["counts"]["total"] == 0
+    assert data["jobs"]["buffer"]["max"] == 1
+
+
+def test_job_submit_complete_flow_via_http(client):
+    data = client.post(
+        "/api/jobs",
+        json={"prompt": "雪地奔跑的狗", "encode_spec": "1g.10gb", "generate_spec": "1g.10gb"},
+    ).json()
+    job = data["jobs"]["jobs"][0]
+    assert job["state"] == "encoding"
+    assert job["encode"]["slice_id"] == "idle-2"
+
+    data = client.post(f"/api/jobs/{job['id']}/complete", json={"stage": "encode"}).json()
+    job = data["jobs"]["jobs"][0]
+    assert job["state"] == "generating"
+    assert data["jobs"]["buffer"]["job"] is None
+
+    data = client.post(
+        f"/api/jobs/{job['id']}/complete",
+        json={"stage": "generate", "caption": "一只狗在雪地奔跑"},
+    ).json()
+    job = data["jobs"]["jobs"][0]
+    assert job["state"] == "done"
+    assert job["caption"] == "一只狗在雪地奔跑"
+    assert job["generate"]["released_at"]
+    idle = {s["id"]: s for s in data["layout"]["slices"]}["idle-2"]
+    assert idle["status"] == "idle" and idle["order_count"] == 0
+
+
+def test_duplicate_completion_via_http_is_idempotent(client):
+    data = client.post(
+        "/api/jobs",
+        json={"prompt": "x", "encode_spec": "1g.10gb", "generate_spec": "1g.10gb"},
+    ).json()
+    job_id = data["jobs"]["jobs"][0]["id"]
+    client.post(f"/api/jobs/{job_id}/complete", json={"stage": "encode"})
+    first = client.post(f"/api/jobs/{job_id}/complete", json={"stage": "encode"}).json()
+    second = client.post(f"/api/jobs/{job_id}/complete", json={"stage": "encode"}).json()
+    job_first = next(j for j in first["jobs"]["jobs"] if j["id"] == job_id)
+    job_second = next(j for j in second["jobs"]["jobs"] if j["id"] == job_id)
+    assert job_first["duplicate_reports"] == 1
+    assert job_second["duplicate_reports"] == 2
+    assert job_first["state"] == job_second["state"] == "generating"
+
+
+def test_job_completion_before_start_is_409(client):
+    client.post(
+        "/api/jobs",
+        json={"prompt": "x", "encode_spec": "1g.10gb", "generate_spec": "1g.10gb"},
+    )
+    client.post(
+        "/api/jobs",
+        json={"prompt": "y", "encode_spec": "1g.10gb", "generate_spec": "1g.10gb"},
+    )
+    res = client.post("/api/jobs/job-002/complete", json={"stage": "encode"})
+    assert res.status_code == 409
+
+
+def test_unknown_job_returns_409(client):
+    res = client.post("/api/jobs/job-999/complete", json={"stage": "encode"})
+    assert res.status_code == 409
+
+
+def test_external_release_frees_slice_and_dispatches(client):
+    # Hold the only 1g idle slice with unrelated external work.
+    client.post("/api/order", json={"slice_id": "idle-2"})
+    data = client.post(
+        "/api/jobs",
+        json={"prompt": "x", "encode_spec": "1g.10gb", "generate_spec": "1g.10gb"},
+    ).json()
+    assert data["jobs"]["jobs"][0]["state"] == "queued"
+    data = client.post("/api/order/release", json={"slice_id": "idle-2"}).json()
+    assert data["jobs"]["jobs"][0]["state"] == "encoding"

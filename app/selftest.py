@@ -10,7 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .batch import BatchError, BatchService
-from .defaults import DEFAULT_LAYOUT, SELFTEST_LAYOUT
+from .defaults import DEFAULT_LAYOUT, JOB_LAYOUT, SELFTEST_LAYOUT
+from .jobs import JobService
 from .simulator import SimError, Simulator
 
 
@@ -75,6 +76,10 @@ def run_selftest() -> dict:
         _scenario_retry_only_unfinished(),
         _scenario_no_solution_keeps_card_untouched(),
         _scenario_planner_minimises_removals(),
+        _scenario_job_pipeline(),
+        _scenario_job_generate_congestion(),
+        _scenario_job_duplicate_completion(),
+        _scenario_job_delivery_wakes_queue(),
     ]
     passed = all(s.passed for s in scenarios)
     return {
@@ -290,6 +295,166 @@ def _scenario_planner_minimises_removals() -> Scenario:
         svc.confirm()
         running_after = {s.id: (s.start, s.end) for s in sim.slices.values() if s.is_running}
         sc.check("运行中切片原地保留", running_before == running_after)
+    except Exception as exc:  # pragma: no cover
+        sc.error = f"{type(exc).__name__}: {exc}"
+    return sc
+
+
+# ------------------------------------------------------------- job scenarios
+def _fresh_jobs() -> tuple[Simulator, JobService]:
+    sim = Simulator(JOB_LAYOUT)
+    return sim, JobService(sim)
+
+
+def _scenario_job_pipeline() -> Scenario:
+    sc = Scenario(
+        key="job_pipeline",
+        title="图像描述两段推理：开工领取、完工归还、暂存一份",
+        intent="编码与生成分别领取各自规格的切片；编码完工把结果放进卡外暂存位并归还切片，"
+        "生成开工立即取走结果；全部完成后切片回到空闲。",
+    )
+    sim, jobs = _fresh_jobs()
+    try:
+        job = jobs.submit("雪地里的狗", "enc", "gen")
+        sc.check("提交后编码立即开工", job.state == "encoding", job.state)
+        sc.check("编码领取 enc 切片", job.encode.slice_id == "enc-1", str(job.encode.slice_id))
+        sc.check("生成段尚未领取切片", job.generate.slice_id is None)
+        job, dup = jobs.complete(job.id, "encode")
+        sc.check("编码完工非重复", dup is False)
+        sc.check("编码切片已归还", sim.get("enc-1").can_accept, str(sim.get("enc-1").status))
+        sc.check(
+            "生成切片可用时开工即取走暂存结果",
+            job.state == "generating" and jobs.buffer_job_id is None,
+            f"{job.state} / buffer={jobs.buffer_job_id}",
+        )
+        job, dup = jobs.complete(job.id, "generate", "一只黑白相间的狗")
+        sc.check("生成完工后作业完成", job.state == "done", job.state)
+        sc.check("描述被保留", job.caption == "一只黑白相间的狗", str(job.caption))
+        sc.check(
+            "两段切片均已归还",
+            all(s.status == "idle" and not s.orders for s in sim.slices.values()),
+            str([(s.id, s.status, s.order_count) for s in sim.slices.values()]),
+        )
+        sc.check(
+            "等待原因可解释完成态",
+            "已完成" in jobs.wait_reason(job),
+            jobs.wait_reason(job),
+        )
+    except Exception as exc:  # pragma: no cover
+        sc.error = f"{type(exc).__name__}: {exc}"
+    return sc
+
+
+def _scenario_job_generate_congestion() -> Scenario:
+    sc = Scenario(
+        key="job_generate_congestion",
+        title="生成拥塞：已开工编码仍能交出结果并释放切片",
+        intent="生成切片全被占用时，编码切片仍可完工、结果进入暂存位、切片立即归还；"
+        "生成切片腾出后自动开工并取走暂存结果。",
+    )
+    sim, jobs = _fresh_jobs()
+    try:
+        # Occupy both generate slices with unrelated external work.
+        sim.place_order("gen-1")
+        sim.place_order("gen-2")
+        job_a = jobs.submit("第一张", "enc", "gen")
+        sc.check("编码照常开工", job_a.state == "encoding", job_a.state)
+        job_a, _ = jobs.complete(job_a.id, "encode")
+        sc.check("生成全忙时编码仍可完工", job_a.state == "encoded", job_a.state)
+        sc.check("编码切片已释放", sim.get("enc-1").can_accept, str(sim.get("enc-1").status))
+        sc.check("结果已暂存", jobs.buffer_job_id == job_a.id)
+        sc.check(
+            "等待原因说明生成切片全忙",
+            "生成切片" in jobs.wait_reason(job_a),
+            jobs.wait_reason(job_a),
+        )
+        job_b = jobs.submit("第二张", "enc", "gen")
+        sc.check(
+            "暂存位被占时下一单编码不抢跑",
+            job_b.state == "queued",
+            f"{job_b.state}: {jobs.wait_reason(job_b)}",
+        )
+        # A generate slice frees up -> dispatch happens automatically.
+        sim.release_order("gen-1")
+        jobs.tick("生成切片腾出")
+        sc.check("生成切片腾出后自动开工", job_a.state == "generating", job_a.state)
+        sc.check("生成开工即取走暂存结果", jobs.buffer_job_id is None)
+        sc.check(
+            "有编码切片则下一单并行开工",
+            job_b.state == "encoding",
+            f"{job_b.state}: {jobs.wait_reason(job_b)}",
+        )
+        sc.check(
+            "两段同时占用不同切片",
+            {job_a.generate.slice_id, job_b.encode.slice_id} == {"gen-1", "enc-1"},
+            f"{job_a.generate.slice_id}/{job_b.encode.slice_id}",
+        )
+    except Exception as exc:  # pragma: no cover
+        sc.error = f"{type(exc).__name__}: {exc}"
+    return sc
+
+
+def _scenario_job_duplicate_completion() -> Scenario:
+    sc = Scenario(
+        key="job_duplicate_report",
+        title="重复的完工回报只结算一次",
+        intent="同一阶段重复报完工不改变状态、不重复归还切片，只记录被忽略的次数。",
+    )
+    sim, jobs = _fresh_jobs()
+    try:
+        job = jobs.submit("重复回报", "enc", "gen")
+        job, dup = jobs.complete(job.id, "encode")
+        started_at = job.generate.started_at
+        job, dup2 = jobs.complete(job.id, "encode")
+        sc.check("第二次编码回报标记为重复", dup2 is True)
+        sc.check("重复回报计数增加", job.duplicate_reports == 1, str(job.duplicate_reports))
+        sc.check("重复回报不改变生成阶段", job.generate.started_at == started_at)
+        sc.check(
+            "重复回报不重复归还切片",
+            len([e for e in job.events if e.kind == "encode_released"]) == 1,
+            str([e.kind for e in job.events]),
+        )
+        job, _ = jobs.complete(job.id, "generate", "描述")
+        job, dup3 = jobs.complete(job.id, "generate", "另一段描述")
+        sc.check("重复生成回报标记为重复", dup3 is True)
+        sc.check("重复回报不覆盖描述", job.caption == "描述", str(job.caption))
+        sc.check("重复生成回报计数增加", job.duplicate_reports == 2, str(job.duplicate_reports))
+        sc.check("重复回报不会留下占用的切片", all(not s.orders for s in sim.slices.values()))
+    except Exception as exc:  # pragma: no cover
+        sc.error = f"{type(exc).__name__}: {exc}"
+    return sc
+
+
+def _scenario_job_delivery_wakes_queue() -> Scenario:
+    sc = Scenario(
+        key="job_delivery_wakes_queue",
+        title="批次配齐交付后自动继续派单",
+        intent="没有可接单的编码切片时作业排队；批次交付新切片后队列被自动唤醒。",
+    )
+    sim = Simulator(JOB_LAYOUT)
+    jobs = JobService(sim)
+    service = BatchService(sim, on_delivery=jobs.tick)
+    try:
+        # Both gen slices are busy, so a job that wants to encode on `gen`
+        # cannot start yet.
+        sim.place_order("gen-1")
+        sim.place_order("gen-2")
+        job = jobs.submit("等切片", "gen", "gen")
+        sc.check(
+            "无可用 gen 切片时排队",
+            job.state == "queued",
+            f"{job.state}: {jobs.wait_reason(job)}",
+        )
+        # Delivering two `gen` slices (removing the idle enc slice) wakes it.
+        service.plan([("gen", "a"), ("gen", "b")])
+        service.confirm()
+        sc.check("批次已交付", service.batch.state == "delivered", service.batch.state)
+        sc.check(
+            "交付后作业自动开工",
+            job.state in ("encoding", "generating", "encoded", "done"),
+            f"{job.state}: {jobs.wait_reason(job)}",
+        )
+        sc.check("作业已领取 gen 切片", job.encode.slice_id is not None, str(job.encode.slice_id))
     except Exception as exc:  # pragma: no cover
         sc.error = f"{type(exc).__name__}: {exc}"
     return sc

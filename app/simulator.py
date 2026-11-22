@@ -257,6 +257,28 @@ class Simulator:
         del self.slices[slice_id]
         return slc
 
+    def release_order(self, slice_id: str, order_id: str | None = None) -> bool:
+        """Return an order to the control plane and free the slice.
+
+        This is the counterpart to :meth:`place_order` and is used by the job
+        scheduler: a stage releases its lease on completion.  The call is
+        deliberately idempotent so a duplicate completion report cannot free a
+        slice twice or disturb a newer lease.
+        """
+        slc = self.slices.get(slice_id)
+        if slc is None:
+            return False
+        before = len(slc.orders)
+        if order_id is None:
+            slc.orders.clear()
+        else:
+            slc.orders = [order for order in slc.orders if order.id != order_id]
+        changed = len(slc.orders) != before
+        if changed and not slc.orders and slc.status == "busy":
+            slc.status = "idle"
+            slc.accepting = not slc.paused
+        return changed
+
     def set_paused(self, slice_id: str, paused: bool) -> None:
         slc = self.slices.get(slice_id)
         if slc is None:

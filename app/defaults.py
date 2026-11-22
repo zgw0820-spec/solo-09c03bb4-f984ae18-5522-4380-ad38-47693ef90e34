@@ -73,3 +73,17 @@ SELFTEST_LAYOUT = LayoutImport(
         SliceDef(id="st-idle-c", spec="2g.20gb", interval=SlotInterval(start=6, end=7), kind="idle"),
     ],
 )
+
+
+JOB_LAYOUT = LayoutImport(
+    slot_count=4,
+    specs=[
+        SpecDef(name="enc", allowed_intervals=_single_slots(4)),
+        SpecDef(name="gen", allowed_intervals=_single_slots(4)),
+    ],
+    slices=[
+        SliceDef(id="enc-1", spec="enc", interval=SlotInterval(start=0, end=0), kind="idle"),
+        SliceDef(id="gen-1", spec="gen", interval=SlotInterval(start=1, end=1), kind="idle"),
+        SliceDef(id="gen-2", spec="gen", interval=SlotInterval(start=2, end=2), kind="idle"),
+    ],
+)
